@@ -4,6 +4,7 @@ Install:  pip install python-telegram-bot==21.6
 Run:      python join_bot.py
 """
 import asyncio
+import copy
 import csv
 import io
 import json
@@ -20,43 +21,76 @@ from telegram.ext import (
     CommandHandler, ContextTypes, MessageHandler, filters,
 )
 
-# ====== এখানে নিজের তথ্য বসাও ======
-# ⚠️ BotFather থেকে /revoke করে নতুন টোকেন এখানে বসাও (টোকেন কাউকে দেখাবে না)
+# ╔══════════════════════════════════════════════╗
+# ║            ⚙️  এখানে নিজের তথ্য বসাও            ║
+# ╚══════════════════════════════════════════════╝
+# ⚠️ BotFather থেকে /revoke করে নেওয়া নতুন টোকেন। Railway-তে Variables-এ BOT_TOKEN দিলে ভালো।
 BOT_TOKEN = os.getenv("BOT_TOKEN", "9183980987:AAFXJhf0m9SYFSmmx4sCcIvRRP5LAALlLvg")
 
 ADMIN_1_ID = 7122259829   # প্রথম অ্যাডমিনের Telegram user ID
-ADMIN_2_ID = 6753121703            # দ্বিতীয় অ্যাডমিনের Telegram user ID (এখানে বসাও, 0 থাকলে বন্ধ)
+ADMIN_2_ID = 6753121703            # দ্বিতীয় অ্যাডমিনের Telegram user ID (0 থাকলে বন্ধ)
 
 BRAND = "SK COMMUNITY"
-# ====================================
+
+# Railway-তে Volume লাগালে Variables-এ DATA_DIR=/data দাও, তাহলে ডাটা মুছবে না
+DATA_DIR = os.getenv("DATA_DIR", ".")
+# ════════════════════════════════════════════════
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def P(name):
+    """ডাটা ফাইলের পাথ"""
+    return os.path.join(DATA_DIR, name)
+
 
 # দুইজনই মূল অ্যাডমিন (0 বা ফাঁকা আইডি বাদ যাবে)
 ADMIN_IDS = [i for i in (ADMIN_1_ID, ADMIN_2_ID) if i]
 
-CFG_FILE = "config.json"
+CFG_FILE = P("config.json")
+CHANNELS_FILE = P("channels.json")
+LOG_FILE = P("sent_log.json")
+USERS_FILE = P("users.json")
+META_FILE = P("users_meta.json")
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("joinbot")
 
 DEFAULT = {
+    # ---- ওয়েলকাম মেসেজ ----
     "text": f"স্বাগতম! <b>{BRAND}</b>-এ আপনার জয়েন রিকোয়েস্ট পেয়েছি।",
     "media_type": None,   # video / photo / animation
     "media_id": None,
-    "buttons": [],        # [["Text", "https://url"], ...]
+    "buttons": [],        # ওয়েলকাম মেসেজের নিচের বাটন
+    # ---- সেটিংস ----
     "auto_approve": False,
     "banned": [],         # ব্যান করা ইউজার আইডি
     "extra_admins": [],   # /addadmin দিয়ে যোগ হওয়া অ্যাডমিন
-    "contact": "",        # কানেক্টেড অ্যাডমিনদের টেলিগ্রাম ইউজারনেম/লিংক (একাধিক হলে কমা/স্পেস দিয়ে)
-    "rules": f"📖 <b>{BRAND} - অ্যাকাউন্ট খোলার নিয়ম</b>\n\n১️⃣ নিচের লিংকে ক্লিক করে রেজিস্ট্রেশন করুন\n২️⃣ আপনার তথ্য দিয়ে অ্যাকাউন্ট তৈরি করুন\n৩️⃣ অ্যাকাউন্ট ভেরিফাই করুন\n৪️⃣ এডমিনকে ইউজার আইডি পাঠান\n\n(এই লেখাটি অ্যাডমিন প্যানেল থেকে বদলানো যাবে)",
+    "contact": "",        # কানেক্টেড অ্যাডমিনদের @username/লিংক (একাধিক হলে কমা/স্পেস দিয়ে)
+    # ---- ইউজার মেনু ১: অ্যাকাউন্ট খোলার নিয়ম ----
+    "rules": f"📖 <b>{BRAND} - অ্যাকাউন্ট খোলার নিয়ম</b>\n\n১️⃣ নিচের লিংকে ক্লিক করে রেজিস্ট্রেশন করুন\n২️⃣ আপনার তথ্য দিয়ে অ্যাকাউন্ট তৈরি করুন\n৩️⃣ অ্যাকাউন্ট ভেরিফাই করুন\n৪️⃣ এডমিনকে ইউজার আইডি পাঠান",
+    "rules_buttons": [],
+    # ---- ইউজার মেনু ২: কানেক্টেড এডমিন ----
     "profile": f"🧑‍💻 <b>{BRAND} - Developer Profile</b>\n\n🏷 Name ╌ আপনার নাম\n🎯 Dream ╌ আপনার লক্ষ্য\n💡 Work ╌ আপনার কাজ\n\nThanks for visiting {BRAND}! Hit the button ↓",
+    "profile_buttons": [],
+    # ---- ইউজার মেনু ৩: VIP FREE HACK ----
     "vip_locked": f"🔒 <b>এই অপশনটি এখন লক করা আছে।</b>\n\nআনলক করতে {BRAND} এডমিনের সাথে যোগাযোগ করুন।",
+    "vip_buttons": [],
+}
+
+# ইউজার মেনুর তিনটা সেকশন: কোনটার টেক্সট ও বাটন config-এর কোন key-তে থাকে
+SECTIONS = {
+    "rules": {"label": "📖 অ্যাকাউন্ট খোলার নিয়ম", "text_key": "rules", "btn_key": "rules_buttons"},
+    "admin": {"label": "👨‍💻 কানেক্টেড এডমিন", "text_key": "profile", "btn_key": "profile_buttons"},
+    "vip": {"label": "💎 VIP FREE HACK", "text_key": "vip_locked", "btn_key": "vip_buttons"},
 }
 
 
 def load():
     if os.path.exists(CFG_FILE):
         with open(CFG_FILE, encoding="utf-8") as f:
-            return {**DEFAULT, **json.load(f)}
-    return dict(DEFAULT)
+            return {**copy.deepcopy(DEFAULT), **json.load(f)}
+    return copy.deepcopy(DEFAULT)
 
 
 def save(cfg):
@@ -77,8 +111,10 @@ def is_admin(update: Update):
     return bool(update.effective_user) and update.effective_user.id in all_admins()
 
 
-# ---------- বাটন স্টাইল / প্রিমিয়াম ইমোজি ----------
-# স্টাইল: green(সবুজ) / red(লাল) / blue(নীল, থিম কালার)
+# ╔══════════════════════════════════════════════╗
+# ║      🎨 বাটন স্টাইল / প্রিমিয়াম ইমোজি          ║
+# ╚══════════════════════════════════════════════╝
+# স্টাইল: green(সবুজ) / red(লাল) / blue(নীল)
 STYLE_MAP = {"green": "success", "red": "danger", "blue": "primary",
              "success": "success", "danger": "danger", "primary": "primary"}
 # প্রিমিয়াম ইমোজি আইকন কাজ না করলে (বটের ওনারের Premium না থাকলে) এটা False করো
@@ -98,37 +134,104 @@ def mk_btn(text, url=None, cb=None, style=None, emoji=None):
     return InlineKeyboardButton(text, url=url, callback_data=cb, api_kwargs=_kw(style, emoji))
 
 
-def parse_rows_data(text):
-    """লাইন = সারি, && = পাশাপাশি। প্রতিটা বাটন: নাম | লিংক | [green/red/blue] | [emoji_id]"""
+def parse_rows_msg(m):
+    """
+    অ্যাডমিনের পাঠানো মেসেজ থেকে বাটন বানায়।
+    • প্রতি লাইন = একটা সারি, && দিয়ে পাশাপাশি বাটন
+    • ফরম্যাট:  নাম | লিংক | [green/red/blue] | [emoji_id]
+    • নামের ভেতরে প্রিমিয়াম ইমোজি থাকলে বট নিজেই সেটা বাটনের আইকন বানিয়ে নেয়
+    """
+    text = m.text or ""
+
+    # টেলিগ্রামের offset UTF-16 হিসাবে আসে, তাই পাইথন ইনডেক্সে রূপান্তর করছি
+    u16, pos = {}, 0
+    for i, ch in enumerate(text):
+        u16[pos] = i
+        pos += 2 if ord(ch) > 0xFFFF else 1
+    u16[pos] = len(text)
+
+    emo = []  # (শুরু, শেষ, ইমোজি_আইডি)
+    for e in (m.entities or []):
+        if e.type == "custom_emoji":
+            s, en = u16.get(e.offset), u16.get(e.offset + e.length)
+            if s is not None and en is not None:
+                emo.append((s, en, e.custom_emoji_id))
+
     rows = []
-    for line in text.splitlines():
+    line_start = 0
+    for line in text.split("\n"):
         row = []
+        part_start = line_start
         for part in line.split("&&"):
-            f = [x.strip() for x in part.split("|")]
+            part_end = part_start + len(part)
+            bar = part.find("|")
+            name_len = bar if bar >= 0 else len(part)
+            name_end = part_start + name_len
+
+            # নামের অংশে থাকা প্রিমিয়াম ইমোজি খুঁজে বের করো ও নাম থেকে সরাও
+            eid, drop = None, set()
+            for s, en, cid in emo:
+                if part_start <= s and en <= name_end:
+                    eid = eid or cid
+                    drop.update(range(s - part_start, en - part_start))
+            name = "".join(c for j, c in enumerate(part[:name_len]) if j not in drop)
+            cleaned = name + part[name_len:]
+
+            f = [x.strip() for x in cleaned.split("|")]
             if len(f) >= 2 and f[0] and f[1].startswith(("http://", "https://", "tg://")):
-                style, emoji = None, None
+                style, emoji = None, eid
                 for extra in f[2:]:
                     if extra.lower() in STYLE_MAP:
                         style = extra.lower()
                     elif extra.isdigit():
                         emoji = extra
                 row.append([f[0], f[1], style, emoji])
+            part_start = part_end + 2  # "&&" এর দৈর্ঘ্য
         if row:
             rows.append(row)
+        line_start += len(line) + 1
     return rows
+
+
+def norm_rows(rows):
+    """পুরনো ফরম্যাট [নাম, লিংক] কে নতুন ফরম্যাটে আনে"""
+    return [[r] if (r and isinstance(r[0], str)) else r for r in rows]
 
 
 def rows_to_markup(rows):
     out = []
-    for row in rows:
-        if row and isinstance(row[0], str):  # পুরনো ফরম্যাট: [নাম, লিংক]
-            row = [row]
+    for row in norm_rows(rows):
         out.append([mk_btn(b[0], url=b[1], style=b[2] if len(b) > 2 else None,
                            emoji=b[3] if len(b) > 3 else None) for b in row])
     return InlineKeyboardMarkup(out) if out else None
 
 
-# ---------- ইউজার মেনু (নিচের কিবোর্ড) ----------
+def parse_button_rows(m):
+    return rows_to_markup(parse_rows_msg(m))
+
+
+# বাটন যোগ করার নিয়ম (সব জায়গায় এই একই লেখা দেখাবে)
+BTN_HELP = """🔘 বাটন যোগ করো (আগেরগুলো থাকবে)
+
+✍️ ফরম্যাট (প্রতি লাইনে ১টা বাটন):
+বাটনের নাম | https://লিংক
+
+🎨 রঙ দিতে চাইলে শেষে লেখো green / red / blue:
+বাটনের নাম | https://লিংক | green
+
+💎 প্রিমিয়াম ইমোজি দিতে: বাটনের নামের শুরুতে প্রিমিয়াম ইমোজি বসিয়ে পাঠাও। আমি নিজেই বাটনের পাশে সেট করে নেব (Premium অ্যাকাউন্ট থেকে লিখতে হবে)।
+উদাহরণ: (প্রিমিয়াম ইমোজি) VIP জয়েন | https://t.me/xyz | green
+
+↔️ পাশাপাশি ২টা বাটন: && দিয়ে আলাদা করো
+নাম১ | লিংক১ && নাম২ | লিংক২
+
+🗑 সব মুছতে লেখো: clear
+❌ বাতিল করতে: /cancel"""
+
+
+# ╔══════════════════════════════════════════════╗
+# ║          📱 ইউজার মেনু (নিচের কিবোর্ড)          ║
+# ╚══════════════════════════════════════════════╝
 # (key, ইমোজি, লেখা, রঙ)
 MENU_ITEMS = [
     ("rules", "📖", "অ্যাকাউন্ট খোলার নিয়ম", "green"),
@@ -154,9 +257,54 @@ def build_menu_kb():
 MENU_REGEX = "(" + "|".join(re.escape(l) for _, _, l, _ in MENU_ITEMS) + ")$"
 
 
-CHANNELS_FILE = "channels.json"
+def contact_urls(cfg):
+    """কন্টাক্টে এক বা একাধিক @username/লিংক থাকতে পারে (কমা বা স্পেস দিয়ে আলাদা)"""
+    raw = (cfg.get("contact") or "").replace(",", " ").split()
+    urls = []
+    for c in raw:
+        urls.append(c if c.startswith("http") else "https://t.me/" + c.lstrip("@"))
+    return urls
 
 
+def section_markup(sec, cfg):
+    """একটা মেনুর মেসেজের নিচের সব বাটন (এডমিন ইনবক্স বাটন + অ্যাডমিনের যোগ করা বাটন)"""
+    out = []
+    if sec == "admin":
+        urls = contact_urls(cfg)
+        for i, u in enumerate(urls, 1):
+            label = "💬 ইনবক্স করুন" if len(urls) == 1 else f"💬 এডমিন {i} কে ইনবক্স করুন"
+            out.append([mk_btn(label, url=u, style="blue")])
+    mk = rows_to_markup(cfg.get(SECTIONS[sec]["btn_key"], []))
+    if mk:
+        out.extend([list(r) for r in mk.inline_keyboard])
+    return InlineKeyboardMarkup(out) if out else None
+
+
+async def send_section(bot, chat_id, sec, cfg):
+    await bot.send_message(
+        chat_id, cfg[SECTIONS[sec]["text_key"]], parse_mode="HTML",
+        reply_markup=section_markup(sec, cfg), disable_web_page_preview=True)
+
+
+async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg = load()
+    t = update.message.text
+    if is_banned(update.effective_user.id):
+        return
+    add_user(update.effective_user.id)
+    remember(update.effective_user)
+    key = next((k for k, _, l, _ in MENU_ITEMS if t.endswith(l)), None)
+    if key in SECTIONS:
+        await send_section(context.bot, update.effective_chat.id, key, cfg)
+
+
+async def send_menu(bot, chat_id):
+    await bot.send_message(chat_id, "👇 নিচের মেনু থেকে অপশন বেছে নিন", reply_markup=build_menu_kb())
+
+
+# ╔══════════════════════════════════════════════╗
+# ║            📢 চ্যানেল / ডাটা ফাইল              ║
+# ╚══════════════════════════════════════════════╝
 def load_channels():
     if os.path.exists(CHANNELS_FILE):
         with open(CHANNELS_FILE, encoding="utf-8") as f:
@@ -169,10 +317,72 @@ def save_channels(ch):
         json.dump(ch, f, ensure_ascii=False)
 
 
-def parse_button_rows(text):
-    return rows_to_markup(parse_rows_data(text))
+def load_users():
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, encoding="utf-8") as f:
+            return set(json.load(f))
+    return set()
 
 
+def add_user(uid):
+    users = load_users()
+    if uid not in users:
+        users.add(uid)
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(users), f)
+
+
+def remember(user):
+    """ইউজারের নাম/ইউজারনেম সেভ রাখো (@username দিয়ে খোঁজার জন্য)"""
+    meta = {}
+    if os.path.exists(META_FILE):
+        with open(META_FILE, encoding="utf-8") as f:
+            meta = json.load(f)
+    meta[str(user.id)] = {"name": user.full_name, "username": (user.username or "").lower()}
+    with open(META_FILE, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False)
+
+
+def find_user(query):
+    """@username বা ID থেকে user id বের করো"""
+    q = query.strip().lstrip("@").lower()
+    if q.isdigit():
+        return int(q)
+    if os.path.exists(META_FILE):
+        with open(META_FILE, encoding="utf-8") as f:
+            for uid, d in json.load(f).items():
+                if d["username"] == q:
+                    return int(uid)
+    return None
+
+
+def add_log(entry):
+    data = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    entry["ts"] = time.time()
+    data.append(entry)
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(data[-5000:], f, ensure_ascii=False)
+
+
+def is_banned(uid):
+    return uid in load().get("banned", [])
+
+
+async def notify_admins(bot, text):
+    """সব অ্যাডমিনকে (দুইজন মূল + এক্সট্রা) নোটিফিকেশন পাঠায়"""
+    for aid in all_admins():
+        try:
+            await bot.send_message(aid, text, disable_web_page_preview=True)
+        except Exception as e:
+            log.warning("অ্যাডমিন %s কে নোটিফিকেশন যায়নি (বটে /start দিয়েছে কি?): %s", aid, e)
+
+
+# ╔══════════════════════════════════════════════╗
+# ║     🟢🔴 জয়েন / লিভ নোটিফিকেশন (পাবলিক+প্রাইভেট) ║
+# ╚══════════════════════════════════════════════╝
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """বটকে কোনো চ্যানেল/গ্রুপে অ্যাডমিন করলে অটো লিস্টে যোগ হবে"""
     c = update.my_chat_member
@@ -194,9 +404,7 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await notify_admins(context.bot, f"➖ বট সরে গেছে/সরানো হয়েছে: {chat.title}")
 
 
-# ---------- জয়েন / লিভ নোটিফিকেশন (পাবলিক + প্রাইভেট দুই ধরনের চ্যানেল/গ্রুপ) ----------
 IN_STATUSES = ("member", "administrator", "creator")
-OUT_STATUSES = ("left", "kicked")
 
 
 def _is_in(member):
@@ -251,49 +459,9 @@ async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admins(context.bot, msg)
 
 
-def is_banned(uid):
-    return uid in load().get("banned", [])
-
-
-def contact_urls(cfg):
-    """কন্টাক্টে এক বা একাধিক @username/লিংক থাকতে পারে (কমা বা স্পেস দিয়ে আলাদা)"""
-    raw = (cfg.get("contact") or "").replace(",", " ").split()
-    urls = []
-    for c in raw:
-        if c.startswith("http"):
-            urls.append(c)
-        else:
-            urls.append("https://t.me/" + c.lstrip("@"))
-    return urls
-
-
-async def send_menu(bot, chat_id):
-    await bot.send_message(chat_id, "👇 নিচের মেনু থেকে অপশন বেছে নিন", reply_markup=build_menu_kb())
-
-
-async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cfg = load()
-    t = update.message.text
-    if is_banned(update.effective_user.id):
-        return
-    add_user(update.effective_user.id)
-    remember(update.effective_user)
-    key = next((k for k, _, l, _ in MENU_ITEMS if t.endswith(l)), None)
-    if key == "rules":
-        await update.message.reply_text(cfg["rules"], parse_mode="HTML",
-                                        disable_web_page_preview=True)
-    elif key == "admin":
-        urls = contact_urls(cfg)
-        rows = []
-        for i, u in enumerate(urls, 1):
-            label = "💬 ইনবক্স করুন" if len(urls) == 1 else f"💬 এডমিন {i} কে ইনবক্স করুন"
-            rows.append([mk_btn(label, url=u, style="blue")])
-        kb = InlineKeyboardMarkup(rows) if rows else None
-        await update.message.reply_text(cfg["profile"], parse_mode="HTML", reply_markup=kb)
-    elif key == "vip":
-        await update.message.reply_text(cfg["vip_locked"], parse_mode="HTML")
-
-
+# ╔══════════════════════════════════════════════╗
+# ║              📥 জয়েন রিকোয়েস্ট                ║
+# ╚══════════════════════════════════════════════╝
 def markup_from(cfg):
     return rows_to_markup(cfg["buttons"]) if cfg["buttons"] else None
 
@@ -310,73 +478,6 @@ async def send_welcome(bot, chat_id, cfg):
         await bot.send_animation(animation=mid, caption=text, parse_mode="HTML", **kw)
     else:
         await bot.send_message(text=text, parse_mode="HTML", **kw)
-
-
-# ---------- Join request ----------
-LOG_FILE = "sent_log.json"
-USERS_FILE = "users.json"
-
-
-def load_users():
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, encoding="utf-8") as f:
-            return set(json.load(f))
-    return set()
-
-
-META_FILE = "users_meta.json"
-
-
-def remember(user):
-    """ইউজারের নাম/ইউজারনেম সেভ রাখো (@username দিয়ে খোঁজার জন্য)"""
-    meta = {}
-    if os.path.exists(META_FILE):
-        with open(META_FILE, encoding="utf-8") as f:
-            meta = json.load(f)
-    meta[str(user.id)] = {"name": user.full_name, "username": (user.username or "").lower()}
-    with open(META_FILE, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False)
-
-
-def find_user(query):
-    """@username বা ID থেকে user id বের করো"""
-    q = query.strip().lstrip("@").lower()
-    if q.isdigit():
-        return int(q)
-    if os.path.exists(META_FILE):
-        with open(META_FILE, encoding="utf-8") as f:
-            for uid, d in json.load(f).items():
-                if d["username"] == q:
-                    return int(uid)
-    return None
-
-
-def add_user(uid):
-    users = load_users()
-    if uid not in users:
-        users.add(uid)
-        with open(USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sorted(users), f)
-
-
-def add_log(entry):
-    data = []
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-    entry["ts"] = time.time()
-    data.append(entry)
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data[-5000:], f, ensure_ascii=False)
-
-
-async def notify_admins(bot, text):
-    """সব অ্যাডমিনকে (দুইজন মূল + এক্সট্রা) নোটিফিকেশন পাঠায়"""
-    for aid in all_admins():
-        try:
-            await bot.send_message(aid, text, disable_web_page_preview=True)
-        except Exception as e:
-            log.warning("অ্যাডমিন %s কে নোটিফিকেশন যায়নি (বটে /start দিয়েছে কি?): %s", aid, e)
 
 
 async def on_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -443,7 +544,9 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines)[:4000])
 
 
-# ---------- Admin panel ----------
+# ╔══════════════════════════════════════════════╗
+# ║               ⚙️ অ্যাডমিন প্যানেল              ║
+# ╚══════════════════════════════════════════════╝
 def panel_kb(cfg):
     ap = "✅ ON" if cfg["auto_approve"] else "❌ OFF"
     return InlineKeyboardMarkup([
@@ -452,16 +555,30 @@ def panel_kb(cfg):
         [mk_btn("📣 চ্যানেলে পোস্ট করো", cb="post", style="green")],
         [mk_btn("📊 স্ট্যাটস", cb="stats"), mk_btn("📤 ইউজার এক্সপোর্ট", cb="export")],
         [mk_btn("🚫 ব্যান/আনব্যান", cb="ban_help", style="red")],
-        [mk_btn("📝 টেক্সট সেট", cb="set_text")],
-        [mk_btn("📖 নিয়ম সেট", cb="set_rules"), mk_btn("👨‍💻 প্রোফাইল সেট", cb="set_profile")],
-        [mk_btn("🔗 কন্টাক্ট লিংক", cb="set_contact"), mk_btn("🔒 VIP লক টেক্সট", cb="set_vip")],
-        [mk_btn("🎬 ভিডিও/ছবি/GIF সেট", cb="set_media")],
-        [mk_btn("🔘 বাটন যোগ/মুছো", cb="set_buttons")],
+        [mk_btn("📋 ইউজার মেনু সেটিংস (নিয়ম / এডমিন / VIP)", cb="menu_settings", style="green")],
+        [mk_btn("📝 ওয়েলকাম টেক্সট", cb="set_text"), mk_btn("🔘 ওয়েলকাম বাটন", cb="set_buttons")],
+        [mk_btn("🔗 এডমিন কন্টাক্ট লিংক", cb="set_contact"), mk_btn("🎬 ভিডিও/ছবি/GIF", cb="set_media")],
         [mk_btn("👮 অ্যাডমিন লিস্ট", cb="admins_list")],
         [mk_btn("💎 প্রিমিয়াম ইমোজি ID বের করো", cb="emojiid", style="blue")],
         [mk_btn(f"Auto Approve: {ap}", cb="toggle_ap",
                 style="green" if cfg["auto_approve"] else "red")],
         [mk_btn("👁 প্রিভিউ", cb="preview"), mk_btn("🗑 মিডিয়া মুছো", cb="clear_media")],
+    ])
+
+
+def menu_settings_kb():
+    rows = [[mk_btn(s["label"], cb=f"sec:{k}")] for k, s in SECTIONS.items()]
+    rows.append([mk_btn("⬅️ প্যানেলে ফিরে যাও", cb="panel_home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def section_kb(sec):
+    return InlineKeyboardMarkup([
+        [mk_btn("📝 টেক্সট বদলাও", cb=f"sec_text:{sec}", style="blue")],
+        [mk_btn("🔘 বাটন যোগ করো", cb=f"sec_btn:{sec}", style="green")],
+        [mk_btn("🗑 সব বাটন মুছো", cb=f"sec_clr:{sec}", style="red")],
+        [mk_btn("👁 প্রিভিউ", cb=f"sec_prev:{sec}")],
+        [mk_btn("⬅️ পেছনে", cb="menu_settings")],
     ])
 
 
@@ -483,8 +600,7 @@ def build_admins_text():
     lines = ["👮 <b>অ্যাডমিন লিস্ট</b>\n"]
     for i, aid in enumerate(ADMIN_IDS, 1):
         lines.append(f"👑 মূল অ্যাডমিন {i}: <code>{aid}</code>")
-    extra = cfg.get("extra_admins", [])
-    for aid in extra:
+    for aid in cfg.get("extra_admins", []):
         lines.append(f"🔹 এক্সট্রা অ্যাডমিন: <code>{aid}</code>")
     if not ADMIN_2_ID:
         lines.append("\n⚠️ দ্বিতীয় অ্যাডমিন সেট করা নেই। কোডে ADMIN_2_ID বসাও।")
@@ -507,17 +623,54 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg = load()
     d = q.data
     prompts = {
-        "set_rules": ("rules", "📖 অ্যাকাউন্ট খোলার নিয়মের লেখা পাঠাও (ফরম্যাটিং সাপোর্টেড)।"),
-        "set_profile": ("profile", "👨‍💻 কানেক্টেড এডমিনের প্রোফাইল লেখা পাঠাও (তোমার বিষয়ে যা খুশি)।"),
-        "set_contact": ("contact", "🔗 কানেক্টেড এডমিনদের টেলিগ্রাম @username বা লিংক পাঠাও।\n\nদুইজনের হলে কমা বা স্পেস দিয়ে লেখো, যেমন:\n@admin1, @admin2\n\nইউজাররা প্রতিজনের জন্য আলাদা ইনবক্স বাটন দেখবে।"),
-        "set_vip": ("vip", "🔒 VIP বাটনে ক্লিক করলে যে লক মেসেজ দেখাবে, সেটা পাঠাও।"),
-        "set_text": ("text", "নতুন মেসেজ টেক্সট পাঠাও (bold/italic ফরম্যাটিং সাপোর্টেড)।"),
-        "set_media": ("media", "একটা ভিডিও / ছবি / GIF পাঠাও।"),
-        "set_buttons": ("buttons", "🔘 বাটন যোগ করো (আগেরগুলো থাকবে)।\n\nফরম্যাট (প্রতি লাইনে একটা):\nনাম | https://link\n\n🎨 রঙ সহ: নাম | https://link | green\n(green = সবুজ, red = লাল, blue = নীল)\n\n💎 প্রিমিয়াম ইমোজি সহ:\nনাম | https://link | green | ইমোজি_আইডি\n\nপাশাপাশি ২টা বাটন: && দিয়ে আলাদা করো\nসব মুছতে লেখো: clear"),
+        "set_contact": ("contact", "🔗 কানেক্টেড এডমিনদের টেলিগ্রাম @username বা লিংক পাঠাও।\n\nদুইজনের হলে কমা বা স্পেস দিয়ে লেখো, যেমন:\n@admin1, @admin2\n\nইউজাররা 'কানেক্টেড এডমিন' মেনুতে প্রতিজনের জন্য আলাদা ইনবক্স বাটন দেখবে।"),
+        "set_text": ("text", "📝 নতুন ওয়েলকাম মেসেজ টেক্সট পাঠাও (bold/italic ফরম্যাটিং সাপোর্টেড)।"),
+        "set_media": ("media", "🎬 একটা ভিডিও / ছবি / GIF পাঠাও।"),
+        "set_buttons": ("buttons", "🔘 ওয়েলকাম মেসেজের নিচের বাটন।\n\n" + BTN_HELP),
     }
     if d in prompts:
         context.user_data["await"] = prompts[d][0]
         await q.message.reply_text(prompts[d][1])
+
+    # ---------- ইউজার মেনু সেটিংস ----------
+    elif d == "menu_settings":
+        context.user_data.pop("await", None)
+        await q.edit_message_text(
+            "📋 ইউজার মেনু সেটিংস\n\nকোন মেনুর টেক্সট/বাটন বদলাতে চাও?",
+            reply_markup=menu_settings_kb())
+    elif d == "panel_home":
+        context.user_data.pop("await", None)
+        await q.edit_message_text(f"⚙️ {BRAND} অ্যাডমিন প্যানেল", reply_markup=panel_kb(cfg))
+    elif d.startswith("sec:"):
+        sec = d[4:]
+        if sec in SECTIONS:
+            count = sum(len(r) for r in norm_rows(cfg.get(SECTIONS[sec]["btn_key"], [])))
+            await q.edit_message_text(
+                f"{SECTIONS[sec]['label']}\n\n"
+                f"🔘 এখন বাটন আছে: {count}টা\n"
+                f"ইউজার এই মেনুতে চাপলে টেক্সট ও তার নিচে বাটনগুলো দেখবে।",
+                reply_markup=section_kb(sec))
+    elif d.startswith("sec_text:"):
+        sec = d.split(":", 1)[1]
+        context.user_data["await"] = d
+        await q.message.reply_text(
+            f"📝 {SECTIONS[sec]['label']} এর নতুন টেক্সট পাঠাও (bold/italic ফরম্যাটিং সাপোর্টেড)।\n\nবাতিল: /cancel")
+    elif d.startswith("sec_btn:"):
+        sec = d.split(":", 1)[1]
+        context.user_data["await"] = d
+        await q.message.reply_text(f"{SECTIONS[sec]['label']}\n\n" + BTN_HELP)
+    elif d.startswith("sec_clr:"):
+        sec = d.split(":", 1)[1]
+        if sec in SECTIONS:
+            cfg[SECTIONS[sec]["btn_key"]] = []
+            save(cfg)
+            await q.message.reply_text(f"🗑 {SECTIONS[sec]['label']} এর সব বাটন মুছে ফেলা হয়েছে ✅")
+    elif d.startswith("sec_prev:"):
+        sec = d.split(":", 1)[1]
+        if sec in SECTIONS:
+            await send_section(context.bot, q.message.chat_id, sec, cfg)
+
+    # ---------- বাকি অপশন ----------
     elif d == "admins_list":
         await q.message.reply_text(build_admins_text(), parse_mode="HTML")
     elif d == "broadcast":
@@ -663,6 +816,9 @@ async def send_export(bot, chat_id):
     await bot.send_document(chat_id, data, caption=f"👥 মোট {len(load_users())} জন")
 
 
+# ╔══════════════════════════════════════════════╗
+# ║                 🛠 কমান্ডসমূহ                  ║
+# ╚══════════════════════════════════════════════╝
 async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
@@ -749,12 +905,45 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("বাতিল করা হয়েছে।", reply_markup=panel_kb(load()))
 
 
+# ╔══════════════════════════════════════════════╗
+# ║      ✍️ অ্যাডমিনের পাঠানো মেসেজ হ্যান্ডলার      ║
+# ╚══════════════════════════════════════════════╝
 async def on_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
     mode = context.user_data.get("await")
     if not mode:
         return
+
+    # ---------- ইউজার মেনুর টেক্সট / বাটন ----------
+    if mode.startswith(("sec_text:", "sec_btn:")):
+        kind, sec = mode.split(":", 1)
+        m = update.message
+        if sec not in SECTIONS:
+            context.user_data.pop("await", None)
+            return
+        cfg = load()
+        sc = SECTIONS[sec]
+        if kind == "sec_text":
+            if not m.text:
+                return await m.reply_text("শুধু টেক্সট পাঠাও।")
+            cfg[sc["text_key"]] = m.text_html
+        else:
+            if not m.text:
+                return await m.reply_text("বাটনের লেখা টেক্সট আকারে পাঠাও।")
+            if m.text.strip().lower() == "clear":
+                cfg[sc["btn_key"]] = []
+            else:
+                added = parse_rows_msg(m)
+                if not added:
+                    return await m.reply_text("❌ কোনো বাটন পাইনি। ফরম্যাট: বাটনের নাম | https://লিংক")
+                cfg[sc["btn_key"]] = norm_rows(cfg.get(sc["btn_key"], [])) + added
+        save(cfg)
+        context.user_data.pop("await", None)
+        await m.reply_text(f"সেভ হয়েছে ✅  ({sc['label']})\n\n👇 ইউজার এভাবে দেখবে:")
+        await send_section(context.bot, m.chat_id, sec, cfg)
+        return await m.reply_text("আরও বদলাতে চাইলে:", reply_markup=section_kb(sec))
+
     if mode == "emojiid":
         m = update.message
         ents = list(m.entities or []) + list(m.caption_entities or [])
@@ -768,11 +957,11 @@ async def on_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["post"].update({"src": m.chat_id, "mid": m.message_id})
         context.user_data["await"] = "post_buttons"
         return await m.reply_text(
-            "🔘 পোস্টের নিচে বাটন চাইলে পাঠাও (প্রতি লাইনে একটা):\nনাম | https://link\nপাশাপাশি ২টা: নাম১ | লিংক১ && নাম২ | লিংক২\n\nরঙ: নাম | লিংক | green (red/blue) , প্রিমিয়াম ইমোজি: নাম | লিংক | green | ইমোজি_আইডি\n\nবাটন না চাইলে লেখো: skip")
+            "🔘 পোস্টের নিচে বাটন চাইলে পাঠাও।\n\n" + BTN_HELP.replace("সব মুছতে লেখো: clear", "বাটন না চাইলে লেখো: skip"))
     if mode == "post_buttons":
         m = update.message
         txt = (m.text or "").strip()
-        kb = None if txt.lower() == "skip" else parse_button_rows(txt)
+        kb = None if txt.lower() == "skip" else parse_button_rows(m)
         if kb is None and txt.lower() != "skip":
             return await m.reply_text("❌ বাটন বুঝতে পারিনি। ফরম্যাট: নাম | https://link  (অথবা skip)")
         post = context.user_data["post"]
@@ -805,13 +994,12 @@ async def on_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if mode == "broadcast":
         context.user_data.pop("await", None)
         return await do_broadcast(update, context)
+
+    # ---------- ওয়েলকাম টেক্সট / বাটন / মিডিয়া / কন্টাক্ট ----------
     m = update.message
     cfg = load()
     if mode == "text" and m.text:
         cfg["text"] = m.text_html
-    elif mode in ("rules", "profile", "vip") and m.text:
-        key = {"rules": "rules", "profile": "profile", "vip": "vip_locked"}[mode]
-        cfg[key] = m.text_html
     elif mode == "contact" and m.text:
         cfg["contact"] = m.text.strip()
     elif mode == "media":
@@ -827,12 +1015,10 @@ async def on_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if m.text.strip().lower() == "clear":
             cfg["buttons"] = []
         else:
-            added = parse_rows_data(m.text)
+            added = parse_rows_msg(m)
             if not added:
-                return await m.reply_text("কোনো বাটন পাইনি। ফরম্যাট: নাম | https://link")
-            # পুরনো ফরম্যাট ঠিক করে নতুনগুলো যোগ করো
-            old = [[r] if (r and isinstance(r[0], str)) else r for r in cfg["buttons"]]
-            cfg["buttons"] = old + added
+                return await m.reply_text("❌ কোনো বাটন পাইনি। ফরম্যাট: নাম | https://link")
+            cfg["buttons"] = norm_rows(cfg["buttons"]) + added
     else:
         return
     save(cfg)
@@ -847,7 +1033,7 @@ async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     import telegram
     log.info("python-telegram-bot version: %s", telegram.__version__)
-    log.info("মূল অ্যাডমিন: %s", ADMIN_IDS)
+    log.info("মূল অ্যাডমিন: %s | ডাটা ফোল্ডার: %s", ADMIN_IDS, DATA_DIR)
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_error_handler(on_error)
     app.add_handler(ChatJoinRequestHandler(on_join_request))
